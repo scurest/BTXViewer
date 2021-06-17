@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang=en>
+<meta charset=utf8>
+<title>Nintendo DS BTX0 Texture Viewer</title>
+
+<style>
+/* Colors */
+body {
+    background: #E6E4E0;
+    color: #434A43;
+}
+a:link, a:visited {
+    color: #02606C;
+}
+a:hover {
+    color: red;
+}
+.dropBox {
+    background-color: #434A43;
+    color: #00E0FC;
+}
+table {
+    background-color: #E0DDCB;
+}
+thead, th {
+    background-color: #35393C;
+    border-color: #35393C;
+    color: #E0DDCB;
+}
+td {
+    border-color: #727268;
+}
+canvas:hover {
+    background-color: #00E0FC;
+}
+select {
+    background-color: #00E0FC;
+    border-color: #015F6B;
+}
+
+/* Styles */
+body {
+    text-align: center;
+}
+h1 {
+    padding-top: 30px;
+}
+.dropBox {
+    border-radius: 10px;
+    max-width: 500px;
+    margin: 0 auto 30px auto;
+    font-size:20px;
+    padding: 40px;
+}
+table {
+    margin: 0 auto;
+    border-collapse: collapse;
+}
+td, th {
+    border-width: 1px;
+    border-style: solid;
+    padding: 5px;
+    text-align: center;
+}
+canvas {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+}
+select {
+    border-width: 1px;
+}
+</style>
+
+<h1>Nintendo DS BTX0 Texture Viewer</h1>
+<noscript>Requires Javascript</noscript>
+
+<script>
+
+// BTX0/BMD0 file reader
+//////////////////////////
+
+function readU16(arr) {
+    return arr[0] | (arr[1] << 8);
+}
+
+function readU32(arr) {
+    return arr[0] | (arr[1] << 8) | (arr[2] << 16) | (arr[3] << 24);
+}
+
+function readString(arr) {
+    let s = "";
+    for (let i = 0; i !== arr.length; i++) {
+        s += String.fromCharCode(arr[i]);
+    }
+    return s;
+}
+
+// 16 byte nul-padded name
+function readName(arr) {
+    let i = 16;
+    while (i > 0 && arr[i-1] === 0) {
+        i--;
+    }
+    return readString(arr.subarray(0, i))
+}
+
+// Name-value dictionary
+function readDict(arr) {
+    const num = arr[1];
+    let ofs = 12 + 4*num;
+    const elemSize = readU16(arr.subarray(ofs, ofs+2));
+
+    const dict = [];
+
+    let elemOfs = ofs + 4;
+    let nameOfs = elemOfs + num*elemSize;
+
+    for (let i = 0; i !== num; i++) {
+        const elem = arr.subarray(elemOfs, elemOfs + elemSize);
+        const name = readName(arr.subarray(nameOfs, nameOfs + 16));
+        dict.push([name, elem]);
+
+        elemOfs += elemSize;
+        nameOfs += 16;
+    }
+
+    return dict;
+}
+
+function checkFileSize(filesize) {
+    const tooSmall = filesize < 32;
+    const tooBig = filesize > 6 * 1024 * 1024;
+    if (tooSmall || tooBig) {
+        throw `that looks too ${tooSmall ? "small" : "big"} to be a BTX0/BMD0 file`;
+    }
+}
+
+// Read BTX0/BMD0 file. Returns TEX0 data.
+function readFile(arr) {
+    const blockOfs = readFileHdr(arr);
+    let tex0Block = arr.subarray(blockOfs);
+    return readTEX0(tex0Block);
+}
+
+// Read and validate header. Returns offset to TEX0 block.
+function readFileHdr(arr) {
+    const stamp = readString(arr.subarray(0, 4));
+    if (!(stamp == "BTX0" || stamp == "BMD0")) {
+        throw "that's not a BTX0/BMD0 file!";
+    }
+
+    const bom = readU16(arr.subarray(4, 6));
+    const version = readU16(arr.subarray(6, 8));
+    const hdrSize = readU16(arr.subarray(12, 14));
+    const numBlocks = readU16(arr.subarray(14, 16));
+    const hdrOk = (
+        bom == 0xfeff &&
+        version <= 2 &&
+        hdrSize == 16 &&
+        (numBlocks == 1 || numBlocks == 2)
+    );
+    if (!hdrOk) {
+        throw `bad header for ${stamp} file`;
+    }
+
+    if (stamp == "BTX0") {
+        return readU32(arr.subarray(16, 20));
+    }
+    else {
+        if (numBlocks > 1) {
+            return readU32(arr.subarray(20, 24));
+        }
+        else {
+            throw "that BMD0 file has no textures";
+        }
+    }
+}
+
+function textureByteLength(format, width, height) {
+    const numTexels = width * height;
+    switch (format) {
+        case 0: return 0;
+        case 1: return numTexels;       // A3I5
+        case 2: return numTexels >> 2;  // 2-bit palette
+        case 3: return numTexels >> 1;  // 4-bit palette
+        case 4: return numTexels;       // 8-bit palette
+        case 5: return numTexels >> 2;  // compressed
+        case 6: return numTexels;       // A5I3
+        case 7: return numTexels << 1;  // direct color
+    }
+}
+
+function readTEX0(arr) {
+    const stamp = readString(arr.subarray(0, 4));
+    if (stamp !== "TEX0") {
+        throw "didn't get a TEX0 block";
+    }
+
+    const textureDataOfs = readU32(arr.subarray(20, 24));
+    const textureData = arr.subarray(textureDataOfs);
+
+    // data for format 5 textures
+    const texture5Data1Ofs = readU32(arr.subarray(36, 40));
+    const texture5Data2Ofs = readU32(arr.subarray(40, 44));
+    const texture5Data1 = arr.subarray(texture5Data1Ofs);
+    const texture5Data2 = arr.subarray(texture5Data2Ofs);
+
+    const texturesOfs = readU16(arr.subarray(14, 16));
+    const textures =
+        readDict(arr.subarray(texturesOfs))
+        .map((el, index) => {
+            const [name, data] = el;
+
+            const texParams = readU32(data.subarray(0, 4));
+            const vramAddr = (texParams & 0xffff) << 3;
+            const width = 8 << ((texParams >> 20) & 7);
+            const height = 8 << ((texParams >> 23) & 7);
+            const format = (texParams >> 26) & 7;
+            const alpha0 = (texParams >> 29) & 1;
+
+            const byteLength = textureByteLength(format, width, height);
+
+            let texData = undefined;
+            let texData2 = undefined;
+            if (format === 5) {
+                texData = texture5Data1.subarray(vramAddr, vramAddr + byteLength);
+                texData2 = texture5Data2.subarray(vramAddr>>1, (vramAddr>>1) + (byteLength>>1));
+            }
+            else if (format !== 0) {
+                texData = textureData.subarray(vramAddr, vramAddr + byteLength);
+            }
+
+            return {
+                "name": name,
+                "index": index,
+                "texParams": texParams,
+                "vramAddr": vramAddr,
+                "width": width,
+                "height": height,
+                "format": format,
+                "alpha0": alpha0,
+                "data": texData,
+                "data2": texData2,
+            }
+        });
+
+    const paletteDataSizeShr3 = readU16(arr.subarray(48, 50));
+    const paletteDataOfs = readU32(arr.subarray(56, 60));
+    const paletteDataEndOfs = paletteDataOfs + (paletteDataSizeShr3 << 3);
+    const paletteData = arr.subarray(paletteDataOfs, paletteDataEndOfs);
+
+    const palettesOfs = readU32(arr.subarray(52, 56));
+    const palettes =
+        readDict(arr.subarray(palettesOfs))
+        .map((el, index) => {
+            const [name, data] = el;
+
+            const ofsShr3 = readU16(data.subarray(0, 2));
+            const ofs = ofsShr3 << 3;
+            const palData = paletteData.subarray(ofs);
+
+            return {
+                "name": name,
+                "index": index,
+                "ofs": ofs,
+                "data": palData,
+            }
+        });
+
+    return {
+        "textures": textures,
+        "palettes": palettes,
+    };
+}
+
+function textureRequiresPalette(texture) {
+    return !(texture.format === 0 || texture.format === 7);
+}
+
+// Texture Decoder
+////////////////////
+
+// error flag set when a palette index was OOB
+let ErrPalIdxOutOfBounds = false;
+
+function decodeImage(texture, palette) {
+    ErrPalIdxOutOfBounds = false;
+
+    const out = {
+        "pixels": new Uint8Array(4 * texture.width * texture.height),
+        "ofs": 0,  // write head for next pixel
+    };
+
+    [
+        decodeFormat0,
+        decodeFormat1,
+        decodeFormat2,
+        decodeFormat3,
+        decodeFormat4,
+        decodeFormat5,
+        decodeFormat6,
+        decodeFormat7,
+    ][texture.format](texture, palette, out);
+
+    return {
+        "pixels": out.pixels,
+        "paletteError": ErrPalIdxOutOfBounds,
+    };
+}
+
+function readPalette(palette, palIdx) {
+    if (2*palIdx+1 >= palette.data.length) {
+        ErrPalIdxOutOfBounds = true;
+        return 0x1f;  // red
+    }
+
+    return palette.data[2*palIdx] | (palette.data[2*palIdx+1] << 8);
+}
+
+function putPaletteRGB(out, palette, palIdx) {
+    putRGB(out, readPalette(palette, palIdx));
+}
+
+function putRGB(out, rgb) {
+    let r = rgb & 0x1f;
+    let g = (rgb >> 5) & 0x1f;
+    let b = (rgb >> 10) & 0x1f;
+    out.pixels[out.ofs++] = (r << 3) | (r >> 2);
+    out.pixels[out.ofs++] = (g << 3) | (g >> 2);
+    out.pixels[out.ofs++] = (b << 3) | (b >> 2);
+}
+
+function putAlpha(out, a) {
+    out.pixels[out.ofs++] = (a << 3) | (a >> 2);
+}
+
+function decodeFormat0(texture, palette, out) {
+    // No Texture
+}
+
+function decodeFormat1(texture, palette, out) {
+    // A3I5
+    const numTexels = texture.width * texture.height;
+    for (let i = 0; i !== numTexels; i++) {
+        const texel = texture.data[i];
+        putPaletteRGB(out, palette, texel & 31);
+        putAlpha(out, ((texel >> 3) & 0x1c) + (texel >> 6));
+    }
+}
+
+function decodeFormat2(texture, palette, out) {
+    // 2-bit palette
+    const numTexels = texture.width * texture.height;
+    const numBytes = numTexels >> 2;
+    const alpha0 = texture.alpha0 ? 0 : 31;
+
+    for (let i = 0; i !== numBytes; i++) {
+        let byte = texture.data[i];
+        for (let j = 0; j !== 4; j++) {
+            const texel = byte & 3;
+            byte >>= 2;
+            putPaletteRGB(out, palette, texel);
+            putAlpha(out, texel == 0 ? alpha0 : 31);
+        }
+    }
+}
+
+
+function decodeFormat3(texture, palette, out) {
+    // 4-bit Palette
+    const numTexels = texture.width * texture.height;
+    const numBytes = numTexels >> 1;
+    const alpha0 = texture.alpha0 ? 0 : 31;
+
+    for (let i = 0; i !== numBytes; i++) {
+        let byte = texture.data[i];
+        for (let j = 0; j !== 2; j++) {
+            const texel = byte & 15;
+            byte >>= 4;
+            putPaletteRGB(out, palette, texel);
+            putAlpha(out, texel == 0 ? alpha0 : 31);
+        }
+    }
+}
+
+function decodeFormat4(texture, palette, out) {
+    // 8-bit Palette
+    const numTexels = texture.width * texture.height;
+    const alpha0 = texture.alpha0 ? 0 : 31;
+
+    for (let i = 0; i !== numTexels; i++) {
+        const texel = texture.data[i];
+        putPaletteRGB(out, palette, texel);
+        putAlpha(out, texel == 0 ? alpha0 : 31);
+    }
+}
+
+function decodeFormat5(texture, palette, out) {
+    // 4x4 Block Compressed
+    const numTexels = texture.width * texture.height;
+    const numBlocksX = texture.width >> 2;
+
+    for (let y = 0; y !== texture.height; y++) {
+        for (let x = 0; x !== texture.width; x++) {
+            const blockIdx = numBlocksX * (y >> 2) + (x >> 2);
+            const block =
+                (texture.data[4*blockIdx]) |
+                (texture.data[4*blockIdx+1] << 8) |
+                (texture.data[4*blockIdx+2] << 16) |
+                (texture.data[4*blockIdx+3] << 24);
+            const extra =
+                (texture.data2[2*blockIdx]) |
+                (texture.data2[2*blockIdx+1] << 8);
+
+            const texelOfs = 2 * (4 * (y & 3) + (x & 3));
+            const texel = (block >> texelOfs) & 3;
+
+            const mode = (extra >> 14) & 3;
+            const palAddr = (extra & 0x3fff) << 1;
+
+            if (mode === 0) {
+                if (texel !== 3) {
+                    putPaletteRGB(out, palette, palAddr + texel);
+                }
+                else {
+                    putRGB(out, 0);
+                }
+                putAlpha(out, texel === 3 ? 0 : 31);
+            }
+
+            else if (mode === 1) {
+                if (texel === 0) {
+                    putPaletteRGB(out, palette, palAddr + 0);
+                }
+                else if (texel === 1) {
+                    putPaletteRGB(out, palette, palAddr + 1);
+                }
+                else if (texel === 2) {
+                    const rgb0 = readPalette(palette, palAddr + 0);
+                    const rgb1 = readPalette(palette, palAddr + 1);
+
+                    const r0 = rgb0 & 0x001f;
+                    const g0 = rgb0 & 0x03e0;
+                    const b0 = rgb0 & 0x7c00;
+                    const r1 = rgb1 & 0x001f;
+                    const g1 = rgb1 & 0x03e0;
+                    const b1 = rgb1 & 0x7c00;
+
+                    const r = (r0 + r1) >> 1;
+                    const g = ((g0 + g1) >> 1) & 0x03e0;
+                    const b = ((b0 + b1) >> 1) & 0x7c00;
+
+                    putRGB(out, r | g | b);
+                }
+                else {
+                    putRGB(out, 0);
+                }
+                putAlpha(out, texel === 3 ? 0 : 31);
+            }
+
+            else if (mode === 2) {
+                putPaletteRGB(out, palette, palAddr + texel);
+                putAlpha(out, 31);
+            }
+
+            else {
+                if (texel === 0) {
+                    putPaletteRGB(out, palette, palAddr + 0);
+                }
+                else if (texel === 1) {
+                    putPaletteRGB(out, palette, palAddr + 1);
+                }
+                else {
+                    let rgb0 = readPalette(palette, palAddr + (texel === 2 ? 0 : 1));
+                    let rgb1 = readPalette(palette, palAddr + (texel === 2 ? 1 : 0));
+
+                    const r0 = rgb0 & 0x001f;
+                    const g0 = rgb0 & 0x03e0;
+                    const b0 = rgb0 & 0x7c00;
+                    const r1 = rgb1 & 0x001f;
+                    const g1 = rgb1 & 0x03e0;
+                    const b1 = rgb1 & 0x7c00;
+
+                    const r = (r0*5 + r1*3) >> 3;
+                    const g = ((g0*5 + g1*3) >> 3) & 0x03e0;
+                    const b = ((b0*5 + b1*3) >> 3) & 0x7c00;
+
+                    putRGB(out, r | g | b);
+                }
+                putAlpha(out, 31);
+            }
+        }
+    }
+}
+
+function decodeFormat6(texture, palette, out) {
+    // A5I3
+    const numTexels = texture.width * texture.height;
+    for (let i = 0; i !== numTexels; i++) {
+        const texel = texture.data[i];
+        putPaletteRGB(out, palette, texel & 7);
+        putAlpha(out, texel >> 3);
+    }
+}
+
+function decodeFormat7(texture, palette, out) {
+    // Direct Color
+    const numTexels = texture.width * texture.height;
+    for (let i = 0; i !== numTexels; i++) {
+        const texel = texture.data[2*i] | (texture.data[2*i+1] << 8);
+        putRGB(out, texel);
+        putAlpha(out, 31);
+    }
+}
+
+
+// Guess texture's palette name
+/////////////////////////////////
+
+function guessTexurePaletteNames(tex0) {
+    const paletteNameToIdx = Object.create(null);
+    for (const palette of tex0.palettes) {
+        paletteNameToIdx[palette.name] = palette.index;
+    }
+
+    for (const texture of tex0.textures) {
+        if (!textureRequiresPalette(texture)) {
+            continue;
+        }
+
+        // palette name = texture_name ?
+        let palIdx = paletteNameToIdx[texture.name];
+        if (palIdx !== undefined) {
+            texture.guessedPaletteIdx = palIdx;
+            continue;
+        }
+
+        // palette name = texture_name + "_pl" ?
+        palIdx = paletteNameToIdx[texture.name + "_pl"];
+        if (palIdx !== undefined) {
+            texture.guessedPaletteIdx = palIdx;
+            continue;
+        }
+
+        // fallback
+        texture.guessedPaletteIdx = 0;
+
+    }
+}
+
+// Webpage UI
+///////////////
+
+let TEX0 = null;
+
+const div = document.createElement("div");
+div.innerHTML =
+    "<p class=dropBox>Drop a DS model (.BMD0/.nsbmd) or texture (.BTX0/.nsbtx) file on this page</p>" +
+    "<p>" +
+    "You can extract files from a .nds romfile with " +
+    "<a href='https://projectpokemon.org/home/files/file/2121-the-console-tool/'>ConsoleTool</a>, " +
+    "<a href='https://github.com/pleonex/tinke'>Tinke</a>, " +
+    "<a href='https://github.com/devkitPro/ndstool'>ndstool</a>, " +
+    "<a href='https://github.com/scurest/apicula'>apicula</a>, etc."
+    "</p>";
+document.body.appendChild(div);
+
+document.addEventListener("dragover", function(event) {
+    event.preventDefault();
+}, false);
+
+document.addEventListener("drop", async function(event) {
+    event.preventDefault();
+
+    let file;
+    const dataTransfer = event.dataTransfer;
+
+    if (dataTransfer.items) {
+        if (dataTransfer.items.length !== 1) {
+            alert("Give me only one file please");
+            return;
+        }
+
+        if (dataTransfer.items[0].kind !== "file") {
+            alert("Give me a file");
+            return;
+        }
+
+        file = dataTransfer.items[0].getAsFile();
+    }
+    else {
+        if (dataTransfer.files.length !== 1) {
+            alert("Give me only one file please");
+            return;
+        }
+
+        file = dataTransfer.files[0];
+    }
+
+    try {
+        checkFileSize(file.size);
+
+        const buf = await file.arrayBuffer();
+        const arr = new Uint8Array(buf);
+        TEX0 = readFile(arr);
+
+        guessTexurePaletteNames(TEX0);
+
+        showResults();
+
+    } catch (err) {
+        alert("Error : " + err);
+    }
+}, false);
+
+function showResults() {
+    document.body.innerHTML =
+        "<p>" +
+        "Textures: " + TEX0.textures.length + "<br>" +
+        "Palettes: " + TEX0.palettes.length + "<br>" +
+        "</p>" +
+        "<table><thead><tr>" +
+        "<th>#</th>" +
+        "<th>Name</th>" +
+        "<th>Format</th>" +
+        "<th>Size</th>" +
+        "<th></th>" +
+        "<th>Palette</th>" +
+        "</tr></thead><tbody></tbody></table>";
+
+    const tbody = document.body.querySelector("tbody");
+
+    // Dropdown for selecting a palette
+    // Master copy; gets cloned everytime we need one
+    const paletteDropdown = document.createElement("select");
+    for (const palette of TEX0.palettes) {
+        const option = document.createElement("option");
+        option.textContent = palette["name"];
+        paletteDropdown.appendChild(option);
+    }
+
+    for (const texture of TEX0.textures) {
+        const tr = document.createElement("tr");
+        let td;
+
+        td = document.createElement("td");
+        td.textContent = texture.index.toString();
+        tr.appendChild(td);
+
+        td = document.createElement("td");
+        td.textContent = texture.name;
+        tr.appendChild(td);
+
+        td = document.createElement("td");
+        td.textContent = formatName(texture.format);
+        tr.appendChild(td);
+
+        td = document.createElement("td");
+        if (texture.format !== 0) {
+            td.textContent = `${texture.width}×${texture.height}`;
+        }
+        tr.appendChild(td);
+
+        td = document.createElement("td");
+        if (texture.format !== 0) {
+            const canvas = document.createElement("canvas");
+            canvas.width = texture.width;
+            canvas.height = texture.height;
+
+            const palette =
+                textureRequiresPalette(texture) &&
+                TEX0.palettes[texture.guessedPaletteIdx];
+            renderToCanvas(canvas, texture, palette);
+
+            td.appendChild(canvas);
+        }
+        tr.appendChild(td);
+
+        td = document.createElement("td");
+        if (textureRequiresPalette(texture)) {
+            const dropdown = paletteDropdown.cloneNode(true);
+            dropdown.selectedIndex = texture.guessedPaletteIdx;
+            dropdown.addEventListener("change", onPaletteDropdownChange, false);
+            td.appendChild(dropdown);
+        }
+        else {
+            td.textContent = "n/a";
+        }
+        tr.appendChild(td);
+
+        tbody.appendChild(tr);
+    }
+}
+
+function formatName(format) {
+    switch (format) {
+        case 0: return "No Texture";
+        case 1: return "A3I5 Translucent";
+        case 2: return "4-Color Palette";
+        case 3: return "16-Color Palette";
+        case 4: return "256-Color Palette";
+        case 5: return "4x4-Block Compressed";
+        case 6: return "A5I3 Translucent";
+        case 7: return "Direct Color";
+    }
+}
+
+function renderToCanvas(canvas, texture, palette) {
+    const decodeResult = decodeImage(texture, palette);
+
+    const ctx = canvas.getContext("2d");
+    const imgData = ctx.createImageData(texture.width, texture.height);
+    imgData.data.set(decodeResult.pixels);
+    ctx.putImageData(imgData, 0, 0);
+}
+
+function onPaletteDropdownChange(event) {
+    const tr = event.target.parentNode.parentNode;
+
+    const textureIdx = tr.querySelector("td").textContent;
+    const paletteIdx = event.target.selectedIndex;
+
+    const texture = TEX0.textures[textureIdx];
+    const palette = TEX0.palettes[paletteIdx];
+
+    const canvas = tr.querySelector("canvas");
+    renderToCanvas(canvas, texture, palette);
+}
+
+</script>
