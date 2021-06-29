@@ -181,13 +181,13 @@ function textureByteLength(format, width, height) {
     const numTexels = width * height;
     switch (format) {
         case 0: return 0;
-        case 1: return numTexels;       // A3I5
-        case 2: return numTexels >> 2;  // 2-bit palette
-        case 3: return numTexels >> 1;  // 4-bit palette
-        case 4: return numTexels;       // 8-bit palette
-        case 5: return numTexels >> 2;  // compressed
-        case 6: return numTexels;       // A5I3
-        case 7: return numTexels << 1;  // direct color
+        case 1: return numTexels;        // A3I5
+        case 2: return numTexels >>> 2;  // 2-bit palette
+        case 3: return numTexels >>> 1;  // 4-bit palette
+        case 4: return numTexels;        // 8-bit palette
+        case 5: return numTexels >>> 2;  // compressed
+        case 6: return numTexels;        // A5I3
+        case 7: return numTexels << 1;   // direct color
     }
 }
 
@@ -214,10 +214,10 @@ function readTEX0(arr) {
 
             const texParams = readU32(data.subarray(0, 4));
             const vramAddr = (texParams & 0xffff) << 3;
-            const width = 8 << ((texParams >> 20) & 7);
-            const height = 8 << ((texParams >> 23) & 7);
-            const format = (texParams >> 26) & 7;
-            const alpha0 = (texParams >> 29) & 1;
+            const width = 8 << ((texParams >>> 20) & 7);
+            const height = 8 << ((texParams >>> 23) & 7);
+            const format = (texParams >>> 26) & 7;
+            const alpha0 = (texParams >>> 29) & 1;
 
             const byteLength = textureByteLength(format, width, height);
 
@@ -225,7 +225,7 @@ function readTEX0(arr) {
             let texData2 = undefined;
             if (format === 5) {
                 texData = texture5Data1.subarray(vramAddr, vramAddr + byteLength);
-                texData2 = texture5Data2.subarray(vramAddr>>1, (vramAddr>>1) + (byteLength>>1));
+                texData2 = texture5Data2.subarray(vramAddr>>>1, (vramAddr>>>1) + (byteLength>>>1));
             }
             else if (format !== 0) {
                 texData = textureData.subarray(vramAddr, vramAddr + byteLength);
@@ -324,15 +324,15 @@ function putPaletteRGB(out, palette, palIdx) {
 
 function putRGB(out, rgb) {
     const r = rgb & 0x1f;
-    const g = (rgb >> 5) & 0x1f;
-    const b = (rgb >> 10) & 0x1f;
-    out.pixels[out.ofs++] = (r << 3) | (r >> 2);
-    out.pixels[out.ofs++] = (g << 3) | (g >> 2);
-    out.pixels[out.ofs++] = (b << 3) | (b >> 2);
+    const g = (rgb >>> 5) & 0x1f;
+    const b = (rgb >>> 10) & 0x1f;
+    out.pixels[out.ofs++] = (r << 3) | (r >>> 2);
+    out.pixels[out.ofs++] = (g << 3) | (g >>> 2);
+    out.pixels[out.ofs++] = (b << 3) | (b >>> 2);
 }
 
 function putAlpha(out, a) {
-    out.pixels[out.ofs++] = (a << 3) | (a >> 2);
+    out.pixels[out.ofs++] = (a << 3) | (a >>> 2);
 }
 
 function decodeFormat0(texture, palette, out) {
@@ -345,21 +345,21 @@ function decodeFormat1(texture, palette, out) {
     for (let i = 0; i !== numTexels; i++) {
         const texel = texture.data[i];
         putPaletteRGB(out, palette, texel & 31);
-        putAlpha(out, ((texel >> 3) & 0x1c) + (texel >> 6));
+        putAlpha(out, ((texel >>> 3) & 0x1c) + (texel >>> 6));
     }
 }
 
 function decodeFormat2(texture, palette, out) {
     // 2-bit palette
     const numTexels = texture.width * texture.height;
-    const numBytes = numTexels >> 2;
+    const numBytes = numTexels >>> 2;
     const alpha0 = texture.alpha0 ? 0 : 31;
 
     for (let i = 0; i !== numBytes; i++) {
         let byte = texture.data[i];
         for (let j = 0; j !== 4; j++) {
             const texel = byte & 3;
-            byte >>= 2;
+            byte >>>= 2;
             putPaletteRGB(out, palette, texel);
             putAlpha(out, texel == 0 ? alpha0 : 31);
         }
@@ -370,14 +370,14 @@ function decodeFormat2(texture, palette, out) {
 function decodeFormat3(texture, palette, out) {
     // 4-bit Palette
     const numTexels = texture.width * texture.height;
-    const numBytes = numTexels >> 1;
+    const numBytes = numTexels >>> 1;
     const alpha0 = texture.alpha0 ? 0 : 31;
 
     for (let i = 0; i !== numBytes; i++) {
         let byte = texture.data[i];
         for (let j = 0; j !== 2; j++) {
             const texel = byte & 15;
-            byte >>= 4;
+            byte >>>= 4;
             putPaletteRGB(out, palette, texel);
             putAlpha(out, texel == 0 ? alpha0 : 31);
         }
@@ -399,11 +399,11 @@ function decodeFormat4(texture, palette, out) {
 function decodeFormat5(texture, palette, out) {
     // 4x4 Block Compressed
     const numTexels = texture.width * texture.height;
-    const numBlocksX = texture.width >> 2;
+    const numBlocksX = texture.width >>> 2;
 
     for (let y = 0; y !== texture.height; y++) {
         for (let x = 0; x !== texture.width; x++) {
-            const blockIdx = numBlocksX * (y >> 2) + (x >> 2);
+            const blockIdx = numBlocksX * (y >>> 2) + (x >>> 2);
             const block =
                 (texture.data[4*blockIdx]) |
                 (texture.data[4*blockIdx+1] << 8) |
@@ -414,9 +414,9 @@ function decodeFormat5(texture, palette, out) {
                 (texture.data2[2*blockIdx+1] << 8);
 
             const texelOfs = 2 * (4 * (y & 3) + (x & 3));
-            const texel = (block >> texelOfs) & 3;
+            const texel = (block >>> texelOfs) & 3;
 
-            const mode = (extra >> 14) & 3;
+            const mode = (extra >>> 14) & 3;
             const palAddr = (extra & 0x3fff) << 1;
 
             if (mode === 0) {
@@ -447,9 +447,9 @@ function decodeFormat5(texture, palette, out) {
                     const g1 = rgb1 & 0x03e0;
                     const b1 = rgb1 & 0x7c00;
 
-                    const r = (r0 + r1) >> 1;
-                    const g = ((g0 + g1) >> 1) & 0x03e0;
-                    const b = ((b0 + b1) >> 1) & 0x7c00;
+                    const r = (r0 + r1) >>> 1;
+                    const g = ((g0 + g1) >>> 1) & 0x03e0;
+                    const b = ((b0 + b1) >>> 1) & 0x7c00;
 
                     putRGB(out, r | g | b);
                 }
@@ -482,9 +482,9 @@ function decodeFormat5(texture, palette, out) {
                     const g1 = rgb1 & 0x03e0;
                     const b1 = rgb1 & 0x7c00;
 
-                    const r = (r0*5 + r1*3) >> 3;
-                    const g = ((g0*5 + g1*3) >> 3) & 0x03e0;
-                    const b = ((b0*5 + b1*3) >> 3) & 0x7c00;
+                    const r = (r0*5 + r1*3) >>> 3;
+                    const g = ((g0*5 + g1*3) >>> 3) & 0x03e0;
+                    const b = ((b0*5 + b1*3) >>> 3) & 0x7c00;
 
                     putRGB(out, r | g | b);
                 }
@@ -500,7 +500,7 @@ function decodeFormat6(texture, palette, out) {
     for (let i = 0; i !== numTexels; i++) {
         const texel = texture.data[i];
         putPaletteRGB(out, palette, texel & 7);
-        putAlpha(out, texel >> 3);
+        putAlpha(out, texel >>> 3);
     }
 }
 
