@@ -139,7 +139,7 @@ function checkFileSize(filesize) {
 // Read BTX0/BMD0 file. Returns TEX0 data.
 function readFile(arr) {
     const blockOfs = readFileHdr(arr);
-    let tex0Block = arr.subarray(blockOfs);
+    const tex0Block = arr.subarray(blockOfs);
     return readTEX0(tex0Block);
 }
 
@@ -323,9 +323,9 @@ function putPaletteRGB(out, palette, palIdx) {
 }
 
 function putRGB(out, rgb) {
-    let r = rgb & 0x1f;
-    let g = (rgb >> 5) & 0x1f;
-    let b = (rgb >> 10) & 0x1f;
+    const r = rgb & 0x1f;
+    const g = (rgb >> 5) & 0x1f;
+    const b = (rgb >> 10) & 0x1f;
     out.pixels[out.ofs++] = (r << 3) | (r >> 2);
     out.pixels[out.ofs++] = (g << 3) | (g >> 2);
     out.pixels[out.ofs++] = (b << 3) | (b >> 2);
@@ -472,8 +472,8 @@ function decodeFormat5(texture, palette, out) {
                     putPaletteRGB(out, palette, palAddr + 1);
                 }
                 else {
-                    let rgb0 = readPalette(palette, palAddr + (texel === 2 ? 0 : 1));
-                    let rgb1 = readPalette(palette, palAddr + (texel === 2 ? 1 : 0));
+                    const rgb0 = readPalette(palette, palAddr + (texel === 2 ? 0 : 1));
+                    const rgb1 = readPalette(palette, palAddr + (texel === 2 ? 1 : 0));
 
                     const r0 = rgb0 & 0x001f;
                     const g0 = rgb0 & 0x03e0;
