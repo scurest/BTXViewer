@@ -129,10 +129,12 @@ function readDict(arr) {
 }
 
 function checkFileSize(filesize) {
-    const tooSmall = filesize < 32;
-    const tooBig = filesize > 6 * 1024 * 1024;
-    if (tooSmall || tooBig) {
-        throw `that looks too ${tooSmall ? "small" : "big"} to be a BTX0/BMD0 file`;
+    if (filesize < 16) {
+        throw "that's not a BTX0/BMD0 file!";
+    }
+
+    if (filesize > 6 * 1024 * 1024) {
+        throw "that's looks too big to a BTX0/BMD0 file";
     }
 }
 
@@ -573,30 +575,18 @@ document.addEventListener("dragover", function(event) {
 document.addEventListener("drop", async function(event) {
     event.preventDefault();
 
-    let file;
     const dataTransfer = event.dataTransfer;
 
-    if (dataTransfer.items) {
-        if (dataTransfer.items.length !== 1) {
-            alert("Give me only one file please");
-            return;
-        }
-
-        if (dataTransfer.items[0].kind !== "file") {
-            alert("Give me a file");
-            return;
-        }
-
-        file = dataTransfer.items[0].getAsFile();
+    if (dataTransfer.files.length === 0) {
+        return;
     }
-    else {
-        if (dataTransfer.files.length !== 1) {
-            alert("Give me only one file please");
-            return;
-        }
 
-        file = dataTransfer.files[0];
+    if (dataTransfer.files.length > 1) {
+        alert("One file only please");
+        return;
     }
+
+    const file = dataTransfer.files[0];
 
     try {
         checkFileSize(file.size);
