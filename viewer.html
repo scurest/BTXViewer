@@ -77,6 +77,8 @@ select {
 
 <script>
 
+class ResultMessage extends Error {}
+
 // BTX0/BMD0 file reader
 //////////////////////////
 
@@ -128,18 +130,8 @@ function readDict(arr) {
     return dict;
 }
 
-function checkFileSize(filesize) {
-    if (filesize < 16) {
-        throw "that's not a BTX0/BMD0 file!";
-    }
-
-    if (filesize > 6 * 1024 * 1024) {
-        throw "that's looks too big to a BTX0/BMD0 file";
-    }
-}
-
 // Read BTX0/BMD0 file. Returns TEX0 data.
-function readFile(arr) {
+function readNSBFile(arr) {
     const blockOfs = readFileHdr(arr);
     const tex0Block = arr.subarray(blockOfs);
     return readTEX0(tex0Block);
@@ -149,7 +141,10 @@ function readFile(arr) {
 function readFileHdr(arr) {
     const stamp = readString(arr.subarray(0, 4));
     if (!(stamp == "BTX0" || stamp == "BMD0")) {
-        throw "that's not a BTX0/BMD0 file!";
+        throw new ResultMessage(
+            "Wrong file type. " +
+            "The first four bytes should be 'BTX0' or 'BMD0'."
+        );
     }
 
     const bom = readU16(arr.subarray(4, 6));
@@ -163,7 +158,10 @@ function readFileHdr(arr) {
         (numBlocks == 1 || numBlocks == 2)
     );
     if (!hdrOk) {
-        throw `bad header for ${stamp} file`;
+        throw new ResultMessage(
+            `${stamp} header looks weird. ` +
+            "If this is really the right filetype, I don't support it, sorry."
+        );
     }
 
     if (stamp == "BTX0") {
@@ -174,7 +172,10 @@ function readFileHdr(arr) {
             return readU32(arr.subarray(20, 24));
         }
         else {
-            throw "that BMD0 file has no textures";
+            throw new ResultMessage(
+                "This BMD model file has no textures. " +
+                "Textures may be stored in a separate BTX file."
+            );
         }
     }
 }
@@ -196,7 +197,7 @@ function textureByteLength(format, width, height) {
 function readTEX0(arr) {
     const stamp = readString(arr.subarray(0, 4));
     if (stamp !== "TEX0") {
-        throw "didn't get a TEX0 block";
+        throw new Error("expected a TEX0 block");
     }
 
     const textureDataOfs = readU32(arr.subarray(20, 24));
@@ -554,7 +555,11 @@ function guessTexurePaletteNames(tex0) {
 // Webpage UI
 ///////////////
 
-let TEX0 = null;
+function textEl(tagName, text) {
+    const el = document.createElement(tagName);
+    el.textContent = text;
+    return el;
+}
 
 const div = document.createElement("div");
 div.innerHTML =
@@ -581,98 +586,102 @@ document.addEventListener("drop", async function(event) {
         return;
     }
 
-    if (dataTransfer.files.length > 1) {
-        alert("One file only please");
-        return;
-    }
+    document.body.innerHTML = "";
 
-    const file = dataTransfer.files[0];
-
-    try {
-        checkFileSize(file.size);
-
-        const buf = await file.arrayBuffer();
-        const arr = new Uint8Array(buf);
-        TEX0 = readFile(arr);
-
-        guessTexurePaletteNames(TEX0);
-
-        showResults();
-
-    } catch (err) {
-        alert("Error : " + err);
+    for (const file of dataTransfer.files) {
+        const div = await makeResultDiv(file);
+        document.body.appendChild(div);
     }
 }, false);
 
-function showResults() {
-    document.body.innerHTML =
-        "<p>" +
-        "Textures: " + TEX0.textures.length + "<br>" +
-        "Palettes: " + TEX0.palettes.length + "<br>" +
-        "</p>" +
-        "<table><thead><tr>" +
+async function makeResultDiv(file) {
+    const div = document.createElement("div");
+
+    div.appendChild(textEl("h2", file.name));
+
+    try {
+        const buf = await file.arrayBuffer();
+        const arr = new Uint8Array(buf);
+        const tex0 = readNSBFile(arr);
+
+        guessTexurePaletteNames(tex0);
+
+        div.innerHTML +=
+            "<p>" +
+            "Textures: " + tex0.textures.length + "<br>" +
+            "Palettes: " + tex0.palettes.length + "<br>" +
+            "</p>";
+
+        div.append(makeTableForTEX0(tex0));
+
+    } catch (err) {
+        console.error("Error | File", file.name, "|", err);
+        if (err instanceof ResultMessage) {
+            div.appendChild(textEl("p", err.message));
+        } else {
+            div.innerHTML += "<p>Something went wrong :-( Check the console.</p>";
+        }
+    }
+
+    return div;
+}
+
+function makeTableForTEX0(tex0) {
+    const table = document.createElement("table");
+    table.innerHTML =
+        "<thead><tr>" +
         "<th>#</th>" +
         "<th>Name</th>" +
         "<th>Format</th>" +
         "<th>Size</th>" +
-        "<th></th>" +
+        "<th></th>" +  // image column
         "<th>Palette</th>" +
-        "</tr></thead><tbody></tbody></table>";
+        "</tr></thead>" +
+        "<tbody></tbody>";
 
-    const tbody = document.body.querySelector("tbody");
+    const tbody = table.querySelector("tbody");
 
-    // Dropdown for selecting a palette
-    // Master copy; gets cloned everytime we need one
+    // Dropdown for selecting a palette.
+    // Master copy; gets cloned every time we need one
     const paletteDropdown = document.createElement("select");
-    for (const palette of TEX0.palettes) {
-        const option = document.createElement("option");
-        option.textContent = palette["name"];
-        paletteDropdown.appendChild(option);
+    for (const palette of tex0.palettes) {
+        paletteDropdown.appendChild(textEl("option", palette["name"]));
     }
 
-    for (const texture of TEX0.textures) {
+    for (const texture of tex0.textures) {
         const tr = document.createElement("tr");
-        let td;
 
-        td = document.createElement("td");
-        td.textContent = texture.index.toString();
-        tr.appendChild(td);
+        tr.appendChild(textEl("td", texture.index));
+        tr.appendChild(textEl("td", texture.name));
+        tr.appendChild(textEl("td", humanReadableFormat(texture.format)));
+        tr.appendChild(textEl("td",
+            texture.format === 0 ? "" : `${texture.width}×${texture.height}`
+        ));
 
-        td = document.createElement("td");
-        td.textContent = texture.name;
-        tr.appendChild(td);
-
-        td = document.createElement("td");
-        td.textContent = formatName(texture.format);
-        tr.appendChild(td);
-
-        td = document.createElement("td");
+        // Canvas cell
+        let canvas;
+        let td = document.createElement("td");
         if (texture.format !== 0) {
-            td.textContent = `${texture.width}×${texture.height}`;
-        }
-        tr.appendChild(td);
-
-        td = document.createElement("td");
-        if (texture.format !== 0) {
-            const canvas = document.createElement("canvas");
+            canvas = document.createElement("canvas");
             canvas.width = texture.width;
             canvas.height = texture.height;
-
-            const palette =
-                textureRequiresPalette(texture) &&
-                TEX0.palettes[texture.guessedPaletteIdx];
-            renderToCanvas(canvas, texture, palette);
-
             td.appendChild(canvas);
+
+            renderTextureToCanvas(canvas, tex0, texture, texture.guessedPaletteIdx);
         }
         tr.appendChild(td);
 
+        // Cell with dropdown for selecting palette
         td = document.createElement("td");
         if (textureRequiresPalette(texture)) {
             const dropdown = paletteDropdown.cloneNode(true);
             dropdown.selectedIndex = texture.guessedPaletteIdx;
-            dropdown.addEventListener("change", onPaletteDropdownChange, false);
             td.appendChild(dropdown);
+
+            const onChange = (event) => {
+                renderTextureToCanvas(canvas, tex0, texture, event.target.selectedIndex);
+            };
+            dropdown.addEventListener("change", onChange, false);
         }
         else {
             td.textContent = "n/a";
@@ -681,9 +690,11 @@ function showResults() {
 
         tbody.appendChild(tr);
     }
+
+    return table;
 }
 
-function formatName(format) {
+function humanReadableFormat(format) {
     switch (format) {
         case 0: return "No Texture";
         case 1: return "A3I5 Translucent";
@@ -696,26 +707,18 @@ function formatName(format) {
     }
 }
 
-function renderToCanvas(canvas, texture, palette) {
-    const decodeResult = decodeImage(texture, palette);
+function renderTextureToCanvas(canvas, tex0, texture, paletteIdx) {
+    let palette = null;
+    if (textureRequiresPalette(texture)) {
+        palette = tex0.palettes[paletteIdx];
+    }
+
+    const pixels = decodeImage(texture, palette).pixels;
 
     const ctx = canvas.getContext("2d");
     const imgData = ctx.createImageData(texture.width, texture.height);
-    imgData.data.set(decodeResult.pixels);
+    imgData.data.set(pixels);
     ctx.putImageData(imgData, 0, 0);
-}
-
-function onPaletteDropdownChange(event) {
-    const tr = event.target.parentNode.parentNode;
-
-    const textureIdx = tr.querySelector("td").textContent;
-    const paletteIdx = event.target.selectedIndex;
-
-    const texture = TEX0.textures[textureIdx];
-    const palette = TEX0.palettes[paletteIdx];
-
-    const canvas = tr.querySelector("canvas");
-    renderToCanvas(canvas, texture, palette);
 }
 
 </script>
